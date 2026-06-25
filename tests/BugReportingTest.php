@@ -123,4 +123,31 @@ class BugReportingTest extends TestCase
 
         $this->assertNull($reporting->report(new \Exception('x')));
     }
+
+    public function testHandleExceptionReportsThenRethrowsWhenNoPreviousHandler()
+    {
+        $transport = new FakeTransport('{}');
+        $reporting = new BugReporting('t', array('transport' => $transport));
+        $exception = new \RuntimeException('boom');
+
+        // With no previous handler, the exception is re-thrown so PHP's default
+        // uncaught-exception handling (visible fatal + non-zero exit) still runs.
+        try {
+            $reporting->handleException($exception);
+            $this->fail('Expected handleException() to re-throw the exception');
+        } catch (\RuntimeException $caught) {
+            $this->assertSame($exception, $caught);
+        }
+
+        $this->assertSame(1, $transport->callCount, 'The exception should still be reported before re-throwing');
+    }
+
+    public function testAcceptsACaInfoPathOption()
+    {
+        // caInfoPath is forwarded to the default cURL transport; it must be an
+        // accepted option (constructing must not raise "Unknown options").
+        $reporting = new BugReporting('t', array('caInfoPath' => '/etc/ssl/certs/ca.pem'));
+
+        $this->assertInstanceOf('Tensorbuzz\BugReporting', $reporting);
+    }
 }

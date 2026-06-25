@@ -17,10 +17,16 @@ class CurlTransport implements TransportInterface
     /** @var int Connection timeout in seconds. */
     private $connectTimeoutSeconds;
 
+    /** @var string|null Path to a CA bundle for CURLOPT_CAINFO. */
+    private $caInfoPath;
+
     /**
      * @param array $options {
-     *     @var int $timeoutSeconds        Total request timeout. Default 5.
-     *     @var int $connectTimeoutSeconds Connection timeout. Default 5.
+     *     @var int         $timeoutSeconds        Total request timeout. Default 5.
+     *     @var int         $connectTimeoutSeconds Connection timeout. Default 5.
+     *     @var string|null $caInfoPath            CA bundle to verify against (CURLOPT_CAINFO).
+     *                                             Useful where the host CA store is too old for
+     *                                             the endpoint's TLS chain. Default the host store.
      * }
      */
     public function __construct(array $options = array())
@@ -29,6 +35,9 @@ class CurlTransport implements TransportInterface
         $this->connectTimeoutSeconds = isset($options['connectTimeoutSeconds'])
             ? (int) $options['connectTimeoutSeconds']
             : 5;
+        $this->caInfoPath = isset($options['caInfoPath']) && $options['caInfoPath'] !== ''
+            ? (string) $options['caInfoPath']
+            : null;
     }
 
     /**
@@ -56,6 +65,11 @@ class CurlTransport implements TransportInterface
         curl_setopt($handle, CURLOPT_RETURNTRANSFER, true);
         curl_setopt($handle, CURLOPT_CONNECTTIMEOUT, $this->connectTimeoutSeconds);
         curl_setopt($handle, CURLOPT_TIMEOUT, $this->timeoutSeconds);
+
+        if ($this->caInfoPath !== null) {
+            curl_setopt($handle, CURLOPT_CAINFO, $this->caInfoPath);
+        }
+
         curl_setopt($handle, CURLOPT_HTTPHEADER, array(
             'Content-Type: application/json',
             'Content-Length: ' . strlen($body),

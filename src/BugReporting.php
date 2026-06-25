@@ -32,6 +32,7 @@ class BugReporting
         'runtimeEnvironment',
         'transport',
         'timeoutSeconds',
+        'caInfoPath',
     );
 
     /** @var string */
@@ -61,6 +62,9 @@ class BugReporting
     /** @var callable|null */
     private $previousErrorHandler;
 
+    /** @var bool Whether an uncaught exception was already reported and re-thrown. */
+    private $reportedUncaughtException = false;
+
     /**
      * @param string $authToken Required TensorBuzz auth token.
      * @param array  $options {
@@ -69,6 +73,7 @@ class BugReporting
      *     @var string|null        $runtimeEnvironment Override the runtime label (default "php").
      *     @var TransportInterface $transport          Custom HTTP transport.
      *     @var int                $timeoutSeconds     Default cURL transport timeout.
+     *     @var string|null        $caInfoPath         CA bundle path for the default cURL transport (CURLOPT_CAINFO).
      * }
      *
      * @throws InvalidArgumentException When the token is missing or an option is unknown/invalid.
@@ -109,6 +114,10 @@ class BugReporting
 
             if (isset($options['timeoutSeconds'])) {
                 $transportOptions['timeoutSeconds'] = $options['timeoutSeconds'];
+            }
+
+            if (isset($options['caInfoPath'])) {
+                $transportOptions['caInfoPath'] = $options['caInfoPath'];
             }
 
             $this->transport = new CurlTransport($transportOptions);
@@ -195,7 +204,21 @@ class BugReporting
 
         if ($this->previousExceptionHandler !== null) {
             call_user_func($this->previousExceptionHandler, $error);
+
+            return;
         }
+
+        // No prior handler: re-throw so PHP's default uncaught-exception
+        // handling still runs (visible fatal output + non-zero exit code).
+        // Otherwise installing a handler that simply returns would turn an
+        // uncaught exception into a silent successful exit (exit code 0),
+        // hiding startup/CLI failures that happen outside a try/catch.
+        //
+        // The re-throw becomes a fatal error, which would otherwise be reported
+        // a second time by the shutdown handler — flag it so that is skipped.
+        $this->reportedUncaughtException = true;
+
+        throw $error;
     }
 
     /**
@@ -230,13 +253,22 @@ class BugReporting
      */
     public function handleShutdown()
     {
+        // The exception handler already reported this fatal (it re-threw an
+        // uncaught exception it had reported in full); don't double-report it.
+        if ($this->reportedUncaughtException) {
+            return;
+        }
+
         $error = error_get_last();
 
         if ($error === null) {
             return;
         }
 
-        $fatalTypes = E_ERROR | E_PARSE | E_CORE_ERROR | E_COMPILE_ERROR | E_USER_ERROR;
+        // E_RECOVERABLE_ERROR is included because on PHP 5.x an uncaught
+        // catchable fatal (e.g. a type-hint violation) is reported with this
+        // type and still terminates execution.
+        $fatalTypes = E_ERROR | E_PARSE | E_CORE_ERROR | E_COMPILE_ERROR | E_USER_ERROR | E_RECOVERABLE_ERROR;
 
         if (!($error['type'] & $fatalTypes)) {
             return;
@@ -486,6 +518,7 @@ class BugReporting
             E_CORE_ERROR => 'PHPCoreError',
             E_COMPILE_ERROR => 'PHPCompileError',
             E_USER_ERROR => 'PHPUserError',
+            E_RECOVERABLE_ERROR => 'PHPRecoverableError',
         );
 
         return isset($classes[$type]) ? $classes[$type] : 'PHPFatalError';
