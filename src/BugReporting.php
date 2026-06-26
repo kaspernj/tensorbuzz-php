@@ -32,6 +32,7 @@ class BugReporting
         'runtimeEnvironment',
         'transport',
         'timeoutSeconds',
+        'caInfoPath',
     );
 
     /** @var string */
@@ -61,6 +62,19 @@ class BugReporting
     /** @var callable|null */
     private $previousErrorHandler;
 
+    /** @var bool Whether an uncaught exception was already reported and re-thrown. */
+    private $reportedUncaughtException = false;
+
+    /**
+     * Signature (type/message/file/line) of the last error the PHP error handler already
+     * reported, so the shutdown handler can skip re-reporting it when a catchable fatal
+     * (E_RECOVERABLE_ERROR / E_USER_ERROR on PHP 5.x) both runs through handlePhpError()
+     * and lands in error_get_last().
+     *
+     * @var array|null
+     */
+    private $lastReportedPhpError = null;
+
     /**
      * @param string $authToken Required TensorBuzz auth token.
      * @param array  $options {
@@ -69,6 +83,7 @@ class BugReporting
      *     @var string|null        $runtimeEnvironment Override the runtime label (default "php").
      *     @var TransportInterface $transport          Custom HTTP transport.
      *     @var int                $timeoutSeconds     Default cURL transport timeout.
+     *     @var string|null        $caInfoPath         CA bundle path for the default cURL transport (CURLOPT_CAINFO).
      * }
      *
      * @throws InvalidArgumentException When the token is missing or an option is unknown/invalid.
@@ -109,6 +124,10 @@ class BugReporting
 
             if (isset($options['timeoutSeconds'])) {
                 $transportOptions['timeoutSeconds'] = $options['timeoutSeconds'];
+            }
+
+            if (isset($options['caInfoPath'])) {
+                $transportOptions['caInfoPath'] = $options['caInfoPath'];
             }
 
             $this->transport = new CurlTransport($transportOptions);
@@ -195,7 +214,21 @@ class BugReporting
 
         if ($this->previousExceptionHandler !== null) {
             call_user_func($this->previousExceptionHandler, $error);
+
+            return;
         }
+
+        // No prior handler: re-throw so PHP's default uncaught-exception
+        // handling still runs (visible fatal output + non-zero exit code).
+        // Otherwise installing a handler that simply returns would turn an
+        // uncaught exception into a silent successful exit (exit code 0),
+        // hiding startup/CLI failures that happen outside a try/catch.
+        //
+        // The re-throw becomes a fatal error, which would otherwise be reported
+        // a second time by the shutdown handler — flag it so that is skipped.
+        $this->reportedUncaughtException = true;
+
+        throw $error;
     }
 
     /**
@@ -216,6 +249,15 @@ class BugReporting
 
         $this->report(new \ErrorException($errorMessage, 0, $errorNumber, (string) $errorFile, (int) $errorLine));
 
+        // Remember what we just reported so handleShutdown() doesn't report it a second
+        // time when a catchable fatal also surfaces via error_get_last().
+        $this->lastReportedPhpError = array(
+            'type' => $errorNumber,
+            'message' => $errorMessage,
+            'file' => (string) $errorFile,
+            'line' => (int) $errorLine,
+        );
+
         if ($this->previousErrorHandler !== null) {
             return call_user_func($this->previousErrorHandler, $errorNumber, $errorMessage, $errorFile, $errorLine);
         }
@@ -230,13 +272,40 @@ class BugReporting
      */
     public function handleShutdown()
     {
+        // The exception handler already reported this fatal (it re-threw an
+        // uncaught exception it had reported in full); don't double-report it.
+        if ($this->reportedUncaughtException) {
+            return;
+        }
+
         $error = error_get_last();
 
         if ($error === null) {
             return;
         }
 
-        $fatalTypes = E_ERROR | E_PARSE | E_CORE_ERROR | E_COMPILE_ERROR | E_USER_ERROR;
+        $this->reportFatalError($error);
+    }
+
+    /**
+     * Reports a fatal error captured at shutdown, unless it is not a fatal type or the PHP
+     * error handler already reported this exact error (which happens for catchable fatals
+     * when connectErrorHandler() is enabled).
+     *
+     * @param array $error An error_get_last()-shaped array (type, message, file, line).
+     *
+     * @return void
+     */
+    protected function reportFatalError(array $error)
+    {
+        if ($this->alreadyReportedByErrorHandler($error)) {
+            return;
+        }
+
+        // E_RECOVERABLE_ERROR / E_USER_ERROR are included because on PHP 5.x a catchable
+        // fatal (e.g. a type-hint violation, or trigger_error(E_USER_ERROR)) surfaces with
+        // these types and still terminates execution when nothing recovers it.
+        $fatalTypes = E_ERROR | E_PARSE | E_CORE_ERROR | E_COMPILE_ERROR | E_USER_ERROR | E_RECOVERABLE_ERROR;
 
         if (!($error['type'] & $fatalTypes)) {
             return;
@@ -247,6 +316,23 @@ class BugReporting
         $backtrace = array($errorClass . ': ' . $error['message'], $location);
 
         $this->sendReport($errorClass, $error['message'], $backtrace, array());
+    }
+
+    /**
+     * Whether handlePhpError() already reported this exact error, so the shutdown handler
+     * must not report it again.
+     *
+     * @param array $error An error_get_last()-shaped array.
+     *
+     * @return bool
+     */
+    private function alreadyReportedByErrorHandler(array $error)
+    {
+        return $this->lastReportedPhpError !== null
+            && $this->lastReportedPhpError['type'] === $error['type']
+            && $this->lastReportedPhpError['message'] === $error['message']
+            && $this->lastReportedPhpError['file'] === $error['file']
+            && $this->lastReportedPhpError['line'] === $error['line'];
     }
 
     /**
@@ -486,6 +572,7 @@ class BugReporting
             E_CORE_ERROR => 'PHPCoreError',
             E_COMPILE_ERROR => 'PHPCompileError',
             E_USER_ERROR => 'PHPUserError',
+            E_RECOVERABLE_ERROR => 'PHPRecoverableError',
         );
 
         return isset($classes[$type]) ? $classes[$type] : 'PHPFatalError';

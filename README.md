@@ -38,9 +38,15 @@ $bugReporting->connect();
 ```
 
 `connect()` registers a `set_exception_handler` (uncaught exceptions) and a
-shutdown handler (fatal errors). It does **not** report warnings/notices by
-default; call `$bugReporting->connectErrorHandler()` if you also want those
-reported as `ErrorException`s.
+shutdown handler (fatal errors, including PHP 5.x `E_RECOVERABLE_ERROR`). It does
+**not** report warnings/notices by default; call
+`$bugReporting->connectErrorHandler()` if you also want those reported as
+`ErrorException`s.
+
+After reporting an uncaught exception, the handler chains to any previously
+registered exception handler, or — if there was none — re-throws it, so PHP's
+default fatal output and non-zero exit code are preserved (reporting never turns
+a crash into a silent successful exit).
 
 ## Reporting manually
 
@@ -70,6 +76,7 @@ new BugReporting($authToken, array(
     'postUrl' => 'https://server.tensorbuzz.com/errors/reports', // default
     'runtimeEnvironment' => 'php',     // default
     'timeoutSeconds' => 5,             // cURL transport timeout
+    'caInfoPath' => '/path/cacert.pem',// CURLOPT_CAINFO for the default transport
     'transport' => $customTransport,   // any Tensorbuzz\Transport\TransportInterface
 ));
 ```
@@ -80,6 +87,10 @@ new BugReporting($authToken, array(
   `report()`.
 - `url`, `user_agent`, and `hostname` are auto-filled from `$_SERVER` when
   available, and can be overridden per report.
+- `caInfoPath` pins a CA bundle (`CURLOPT_CAINFO`) for the default cURL
+  transport. Set it on hosts whose system CA store is too old to verify the
+  endpoint's TLS chain (otherwise reports fail with cURL error 60 and are
+  silently dropped). Ignored when a custom `transport` is supplied.
 
 ## Redaction
 
