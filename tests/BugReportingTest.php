@@ -150,4 +150,56 @@ class BugReportingTest extends TestCase
 
         $this->assertInstanceOf('Tensorbuzz\BugReporting', $reporting);
     }
+
+    public function testShutdownDoesNotDoubleReportAFatalTheErrorHandlerAlreadyReported()
+    {
+        $transport = new FakeTransport('{}');
+        $reporting = new BugReporting('t', array('transport' => $transport));
+
+        // With connectErrorHandler() enabled, a catchable fatal (E_USER_ERROR /
+        // E_RECOVERABLE_ERROR on PHP 5.x) is reported by handlePhpError() first...
+        $reporting->handlePhpError(E_USER_ERROR, 'type error', '/app.php', 42);
+        $this->assertSame(1, $transport->callCount);
+
+        // ...and then surfaces again at shutdown via error_get_last(); it must not be
+        // reported a second time.
+        $this->invokeReportFatalError($reporting, array(
+            'type' => E_USER_ERROR,
+            'message' => 'type error',
+            'file' => '/app.php',
+            'line' => 42,
+        ));
+
+        $this->assertSame(1, $transport->callCount, 'The shutdown handler must not double-report an error the error handler already reported');
+    }
+
+    public function testShutdownStillReportsAFatalTheErrorHandlerNeverSaw()
+    {
+        $transport = new FakeTransport('{}');
+        $reporting = new BugReporting('t', array('transport' => $transport));
+
+        // An uncatchable fatal (e.g. E_ERROR) never runs through handlePhpError(), so the
+        // shutdown handler is the only chance to report it.
+        $this->invokeReportFatalError($reporting, array(
+            'type' => E_ERROR,
+            'message' => 'allowed memory size exhausted',
+            'file' => '/app.php',
+            'line' => 7,
+        ));
+
+        $this->assertSame(1, $transport->callCount);
+    }
+
+    /**
+     * @param BugReporting $reporting
+     * @param array        $error
+     *
+     * @return void
+     */
+    private function invokeReportFatalError(BugReporting $reporting, array $error)
+    {
+        $method = new \ReflectionMethod($reporting, 'reportFatalError');
+        $method->setAccessible(true);
+        $method->invoke($reporting, $error);
+    }
 }
