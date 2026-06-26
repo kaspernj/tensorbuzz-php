@@ -157,8 +157,15 @@ class BugReportingTest extends TestCase
         $reporting = new BugReporting('t', array('transport' => $transport));
 
         // With connectErrorHandler() enabled, a catchable fatal (E_USER_ERROR /
-        // E_RECOVERABLE_ERROR on PHP 5.x) is reported by handlePhpError() first...
-        $reporting->handlePhpError(E_USER_ERROR, 'type error', '/app.php', 42);
+        // E_RECOVERABLE_ERROR on PHP 5.x) is reported by handlePhpError() first. Force
+        // error_reporting on around the call so the handler doesn't early-return under the
+        // test runner's ambient reporting level (newer PHPUnit lowers it).
+        $previousReporting = error_reporting(E_ALL);
+        try {
+            $reporting->handlePhpError(E_USER_ERROR, 'type error', '/app.php', 42);
+        } finally {
+            error_reporting($previousReporting);
+        }
         $this->assertSame(1, $transport->callCount);
 
         // ...and then surfaces again at shutdown via error_get_last(); it must not be
