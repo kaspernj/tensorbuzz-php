@@ -1,4 +1,11 @@
 base_image: kaspernj/tensorbuzz-base-ubuntu-26-04:latest
+paths:
+  - src/**
+  - tests/**
+  - composer.json
+  - phpcs.xml.dist
+  - phpunit.xml.dist
+  - .github/**
 before_install:
   - sudo apt-get update
   - sudo apt-get install -y --no-install-recommends php-cli php-curl php-mbstring php-xml composer git unzip
