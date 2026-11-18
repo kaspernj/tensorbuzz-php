@@ -52,6 +52,19 @@ class PayloadSanitizerTest extends TestCase
         $this->assertNull($sanitized['n']);
     }
 
+    public function testPreservesSparseArrayKeysAsMapEntries()
+    {
+        $sanitized = PayloadSanitizer::sanitize(array(
+            1 => 'one',
+            3 => 'three',
+        ));
+
+        $this->assertSame(array(
+            1 => 'one',
+            3 => 'three',
+        ), $sanitized);
+    }
+
     public function testTruncatesLongStrings()
     {
         $value = str_repeat('a', 1200);
